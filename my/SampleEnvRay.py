@@ -8,13 +8,17 @@ from tensortrade.env.default.actions import BSH, ManagedRiskOrders, SimpleOrders
 from tensortrade.env.default.rewards import PBR, SimpleProfit, RiskAdjustedReturns
 import tensortrade.env.default as default
 from tensortrade.env.default.renderers import PlotlyTradingChart
+import GPUtil
+import torch, os, ray
+from ray.rllib.algorithms.ppo import PPOConfig
+from ray.tune.registry import register_env
 
 # import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))
 
 USD = Instrument("USD", 2, "U.S. Dollar")
 TTC = Instrument("TTC", 2, "TensorTrade Coin")
 
-def create_env():
+def create_env(env_config):
     def load_csv(filename):
         df = pd.read_csv('data/' + filename, skiprows=0)
         # df.drop(columns=['symbol', 'volume_btc'], inplace=True)
@@ -58,6 +62,7 @@ def create_env():
             streams += [Stream.source(list(df[name]), dtype="float").rename(name)]
 
         streams += [Stream.source(list(df['close']), dtype="float").rolling(window=10).mean().rename("fast")]
+        streams += [Stream.source(list(df['close']), dtype="float").rolling(window=50).mean().rename("medium")]
 
     feed = DataFeed(streams)
 
@@ -91,15 +96,39 @@ def create_env():
 
     return env
 
+register_env("TradingEnv", create_env)
 
-env = create_env()
+gpus = GPUtil.getGPUs()
+print("Num GPUs Available:", len(gpus))
+print("torch gpu: ", torch.cuda.device_count())
 
-terminated = False
-obs = env.reset()
-while not terminated:
-    action = env.action_space.sample()
+os.environ["CUDA_VISIBLE_DEVICES"] = '1'
+ray.init(num_cpus=4, num_gpus=1, local_mode=False, log_to_driver=True, include_dashboard=False)
+
+config = (
+    PPOConfig()
+    .environment(
+        env="TradingEnv"
+    )
+    .env_runners(num_env_runners=3)
+    .resources(num_gpus=1)
+)
+algo = config.build()
+
+for i in range(300):
+    results = algo.train()
+    print("Iter: {0}; ep_mean= {1:.0f}  ep_min= {2:.0f}  ep_max= {3:.0f}".format(i, results['episode_reward_mean'], results['episode_return_min'], results['episode_return_max']))
+
+env = create_env(None)
+terminated = truncated = False
+obs, info = env.reset()
+total_reward = 0.0
+while not terminated and not truncated:
+    action = algo.compute_single_action(obs)
     obs, reward, terminated, truncated, info = env.step(action)
+    total_reward += reward
 
+print(f"Played 1 episode; total-reward={total_reward}")
 print(f"net = {env.action_scheme.portfolio.net_worth}")
 print(f"p/l {env.action_scheme.portfolio.profit_loss}")
 

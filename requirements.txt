@@ -3,7 +3,7 @@ pandas>=0.25.0
 gymnasium>=0.28.1
 pyyaml>=5.1.2
 stochastic>=0.6.0
-tensorflow<2.11
+#tensorflow<2.11
 ipython>=7.12.0
 matplotlib>=3.1.1
 plotly>=4.5.0
