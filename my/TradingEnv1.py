@@ -1,3 +1,5 @@
+# C:\Projects\lukaszkn\tensortrade\venv\Scripts\tensorboard.exe --bind_all --logdir C:\Users\lynnx\ray_results\PPO_TradingEnv_2024-08-29_18-35-13vj6_y9lh
+
 import pandas as pd
 from tensortrade.feed.core import DataFeed, Stream, NameSpace
 from tensortrade.oms.instruments import Instrument
@@ -12,11 +14,21 @@ import GPUtil
 import torch, os, ray
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.tune.registry import register_env
+from ray.rllib.algorithms.callbacks import DefaultCallbacks
+from typing import Optional, Dict, Union
+from ray.rllib.policy import Policy
+from ray.rllib import BaseEnv
+from ray.rllib.evaluation import Episode
+from ray.rllib.evaluation.episode_v2 import EpisodeV2
+from ray.rllib.core.rl_module.rl_module import RLModule
+import gymnasium as gym
+from ray.rllib.utils.typing import EpisodeType, PolicyID
+from ray.rllib.utils.metrics.metrics_logger import MetricsLogger
 
 # import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))
 
 USD = Instrument("USD", 2, "U.S. Dollar")
-TTC = Instrument("TTC", 2, "TensorTrade Coin")
+TTC = Instrument("TTC", 4, "TensorTrade Coin")
 
 def create_env(env_config):
     def load_csv(filename):
@@ -39,7 +51,7 @@ def create_env(env_config):
 
         return df
 
-    df = load_csv('UpDown1.csv')
+    df = load_csv('DE40_tf30.csv')
     price_history = df[['datetime', 'open', 'high', 'low', 'close', 'volume']]  # chart data
     price_history.rename(columns={'datetime': 'date'}, inplace=True)
     df.drop(columns=['datetime'], inplace=True)
@@ -60,9 +72,6 @@ def create_env(env_config):
     with NameSpace("exchange"):
         for name in df.columns:
             streams += [Stream.source(list(df[name]), dtype="float").rename(name)]
-
-        streams += [Stream.source(list(df['close']), dtype="float").rolling(window=10).mean().rename("fast")]
-        streams += [Stream.source(list(df['close']), dtype="float").rolling(window=50).mean().rename("medium")]
 
     feed = DataFeed(streams)
 
@@ -96,6 +105,25 @@ def create_env(env_config):
 
     return env
 
+
+class MyCallbacks(DefaultCallbacks):
+    def on_episode_end(
+        self,
+        *,
+        episode: Union[EpisodeType, Episode, EpisodeV2],
+        env_runner: Optional["EnvRunner"] = None,
+        metrics_logger: Optional[MetricsLogger] = None,
+        env: Optional[gym.Env] = None,
+        env_index: int,
+        rl_module: Optional[RLModule] = None,
+        # TODO (sven): Deprecate these args.
+        worker: Optional["EnvRunner"] = None,
+        base_env: Optional[BaseEnv] = None,
+        policies: Optional[Dict[PolicyID, Policy]] = None,
+        **kwargs,
+    ) -> None:
+        episode.custom_metrics["net_worth"] = episode.worker.env.action_scheme.portfolio.net_worth - episode.worker.env.action_scheme.portfolio.initial_net_worth
+
 register_env("TradingEnv", create_env)
 
 gpus = GPUtil.getGPUs()
@@ -111,13 +139,15 @@ config = (
         env="TradingEnv"
     )
     .env_runners(num_env_runners=3)
+    .callbacks(MyCallbacks)
     .resources(num_gpus=1)
 )
 algo = config.build()
 
-for i in range(300):
+for i in range(10000):
     results = algo.train()
-    print("Iter: {0}; ep_mean= {1:.0f}  ep_min= {2:.0f}  ep_max= {3:.0f}".format(i, results['episode_reward_mean'], results['episode_return_min'], results['episode_return_max']))
+    print("Iter: {0}; ep_mean= {1:.0f}  ep_min= {2:.0f}  ep_max= {3:.0f}  net= {4:.0f}".format(i, results['episode_reward_mean'], results['episode_return_min'], results['episode_return_max'],
+                                                                                               results['custom_metrics']['net_worth_mean']))
 
 env = create_env(None)
 terminated = truncated = False
@@ -130,22 +160,7 @@ while not terminated and not truncated:
 
 print(f"Played 1 episode; total-reward={total_reward}")
 print(f"net = {env.action_scheme.portfolio.net_worth}")
-print(f"p/l {env.action_scheme.portfolio.profit_loss}")
 
 env.render()
 
 print("end.")
-"""
-Iter: 0; ep_mean= 121  ep_min= -650  ep_max= 1075
-Iter: 1; ep_mean= 78  ep_min= -650  ep_max= 1075
-Iter: 2; ep_mean= 3811  ep_min= -650  ep_max= 14300
-Iter: 3; ep_mean= 6602  ep_min= -650  ep_max= 23400
-
-Iter: 50; ep_mean= 39487  ep_min= -225  ep_max= 43850
-Iter: 51; ep_mean= 39487  ep_min= -225  ep_max= 43850
-Iter: 52; ep_mean= 40498  ep_min= 14300  ep_max= 43850
-Iter: 53; ep_mean= 41190  ep_min= 23400  ep_max= 43850
-
-Played 1 episode; total-reward=43200.0
-net = 12530320.75
-"""
